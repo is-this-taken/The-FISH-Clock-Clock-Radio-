@@ -1,213 +1,120 @@
-from machine import Pin, SPI # SPI is a class associated with the machine library. 
+# encoder_method1.py
+# SSD1309 version
 
+from machine import Pin, SPI
 
-# The below specified libraries have to be included. Also, ssd1306.py must be saved on the Pico. 
-from ssd1306 import SSD1306_SPI # this is the driver library and the corresponding class
-import framebuf # this is another library for the display. 
+# CHANGED: SSD1306 -> SSD1309 Display driver
+from ssd1309 import Display
 
+SCREEN_WIDTH  = 128
+SCREEN_HEIGHT = 64
 
-# Define columns and rows of the oled display. These numbers are the standard values. 
-SCREEN_WIDTH = 128 #number of columns
-SCREEN_HEIGHT = 64 #number of rows
+#
+# 2D lookup table indexed by [previous AB][current AB].
+#
+table = [
+    [ 0, -1, +1,  0],  # previous AB = 00
+    [+1,  0,  0, -1],  # previous AB = 01
+    [-1,  0,  0, +1],  # previous AB = 10
+    [ 0, +1, -1,  0],  # previous AB = 11
+]
 
-EncoderState = 0
+#
+# Encoder inputs
+#
+EncoderA = Pin(4, Pin.IN)
+EncoderB = Pin(2, Pin.IN)
+
+#
+# Global state
+#
+Count         = 50
 UpdateDisplay = True
+PrevAB        = (EncoderA.value() << 1) | EncoderB.value()
 
 #
-# Encoder service routine for terminal A and B
+# Interrupt handler
 #
+def EncoderInterrupt(pin):
+    global Count, UpdateDisplay, PrevAB
 
-def DoEncoder( Encoder, State ):
-    global EncoderState
-    global Count
-    global UpdateDisplay
+    curr = (EncoderA.value() << 1) | EncoderB.value()
+    delta = table[PrevAB][curr]
+    PrevAB = curr
 
-#
-# Debug output
-#
-#    print( EncoderState, Encoder, State )
+    if delta == +1 and Count < 99:
+        Count += 1
+        UpdateDisplay = True
 
-    if ( EncoderState == 0 ):
-#
-# Check for input A going low ( encoder turning left )
-#
-        if (( Encoder == 'A' ) and ( State == 4 )):
-            EncoderState = 1
-
-#
-# Check for input B going low ( encoder turning right )
-#
-        if (( Encoder == 'B' ) and ( State == 4 )):
-            EncoderState = 4
-
-#
-# Encoding turing right squence ( A=0 then B=0 then A=1 and finally B=1 )
-#
-
-    elif( EncoderState == 1 ):
-#        
-# This should be input B going low
-#
-        if (( Encoder == 'B' ) and ( State == 4 )):
-            EncoderState = 2
-        else:
-            EncoderState = 0
-            
-    elif ( EncoderState == 2 ):
-#
-# This should be input A going high
-#        
-        if (( Encoder == 'A' ) and ( State == 8 )):
-            EncoderState = 3
-        else:
-            EncoderState = 0
-            
-    elif ( EncoderState == 3 ):
-#
-# Finally input B should go high
-#
-        if (( Encoder == 'B' ) and ( State == 8 )):
-
-#
-# The shaft is turing right so increment the count
-#            
-            if ( Count < 99 ):
-                Count = Count + 1
-                UpdateDisplay = True
-
-               
-        EncoderState = 0
+    elif delta == -1 and Count > 0:
+        Count -= 1
+        UpdateDisplay = True
 
 
 #
-# Encoding turing left squence ( B=0 then A=0 then B=1 and finally A=1 )
+# Encoder interrupts
 #
+EncoderA.irq(
+    handler=EncoderInterrupt,
+    trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING,
+    hard=True
+)
 
-    elif ( EncoderState == 4 ):
-#        
-# This should be input A going low
-#        
-        if (( Encoder == 'A' ) and ( State == 4 )):
-            EncoderState = 5
-        else:
-            EncoderState = 0
-            
-    elif ( EncoderState == 5 ):
-#        
-# This should be input B going high
-#        
-        if (( Encoder == 'B' ) and ( State == 8 )):
-            EncoderState = 6
-        else:
-            EncoderState = 0
-                        
-    elif ( EncoderState == 6 ):
-#        
-# This should be input A going high
-#        
-        if (( Encoder == 'A' ) and ( State == 8 )):
-#
-# The shaft is turing left so decrement the count
-#
-            if ( Count != 0 ):
-                Count = Count - 1
-                UpdateDisplay = True
+EncoderB.irq(
+    handler=EncoderInterrupt,
+    trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING,
+    hard=True
+)
 
-        EncoderState = 0
+# ----------------------------------------------------
+# DISPLAY SETUP
+# ----------------------------------------------------
 
-    else:
-        EncoderState = 0
-            
-    return( True )
+spi_sck = Pin(18)
+spi_sda = Pin(19)
+spi_res = Pin(21)
+spi_dc  = Pin(20)
+spi_cs  = Pin(17)
 
-#
-# Service terminal A interrupt
-#
+SPI_DEVICE = 0
 
-def EncoderAInterrupt( Pin ):
-    DoEncoder( 'A', Pin.irq().flags())
-    return( True )
-
-#
-# Service terminal B interrupt
-#
-
-def EncoderBInterrupt( Pin ):
-    DoEncoder( 'B', Pin.irq().flags())
-    return( True )
-
-#
-# GPIO 4 ( Pin 6 ) is connected to terminal A on the encoder
-#
-EncoderA = Pin( 4, Pin.IN )
-
-#
-# GPIO 2 ( Pin 4 ) is connected to terminal B on the encoder
-#
-
-EncoderB = Pin( 2, Pin.IN )
-
-#
-# Enable interrupt detection for both rising and falling edges of both signals
-#
-
-EncoderA.irq( handler= EncoderAInterrupt, trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, hard=True )
-EncoderB.irq( handler= EncoderBInterrupt, trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, hard=True )
+# CHANGED: faster SPI
+oled_spi = SPI(
+    SPI_DEVICE,
+    baudrate=1000000,
+    sck=spi_sck,
+    mosi=spi_sda
+)
 
 
+oled = Display(
+    spi=oled_spi,
+    cs=spi_cs,
+    dc=spi_dc,
+    rst=spi_res,
+    width=SCREEN_WIDTH,
+    height=SCREEN_HEIGHT,
+    flip=False
+)
 
 
-# Initialize I/O pins associated with the oled display SPI interface
+while True:
 
-spi_sck = Pin(18) # sck stands for serial clock; always be connected to SPI SCK pin of the Pico
-spi_sda = Pin(19) # sda stands for serial data;  always be connected to SPI TX pin of the Pico; this is the MOSI
-spi_res = Pin(21) # res stands for reset; to be connected to a free GPIO pin
-spi_dc  = Pin(20) # dc stands for data/command; to be connected to a free GPIO pin
-spi_cs  = Pin(17) # chip select; to be connected to the SPI chip select of the Pico 
+    if UpdateDisplay == True:
 
-#
-# SPI Device ID can be 0 or 1. It must match the wiring. 
-#
-SPI_DEVICE = 0 # Because the peripheral is connected to SPI 0 hardware lines of the Pico
+        UpdateDisplay = False
 
-#
-# initialize the SPI interface for the OLED display
-#
-oled_spi = SPI( SPI_DEVICE, baudrate= 100000, sck= spi_sck, mosi= spi_sda )
+     
+        oled.clear_buffers()
 
-#
-# Initialize the display
-#
-oled = SSD1306_SPI( SCREEN_WIDTH, SCREEN_HEIGHT, oled_spi, spi_dc, spi_res, spi_cs, True )
+       
+        oled.draw_text8x8(0, 0, "Welcome to ECE")
+        oled.draw_text8x8(45, 10, "299")
+        oled.draw_text8x8(0, 30, "Count is: %4d" % Count)
 
+       
+        oled.draw_rectangle(0, 50, 128, 5)
 
-# Assign a value to a variable
-Count = 50
+     
+        oled.present()
 
-while ( True ):
-
-        if ( UpdateDisplay == True ):
-            
-            UpdateDisplay = False
-#
-# Clear the buffer
-#
-            oled.fill(0)
-        
-#
-# Update the text on the screen
-#
-            oled.text("Welcome to ECE", 0, 0) # Print the text starting from 0th column and 0th row
-            oled.text("299", 45, 10) # Print the number 299 starting at 45th column and 10th row
-            oled.text("Count is: %4d" % Count, 0, 30 ) # Print the value stored in the variable Count. 
-        
-#
-# Draw box below the text
-#
-            oled.rect( 0, 50, 128, 5, 1  )        
-
-#
-# Transfer the buffer to the screen
-#
-            oled.show()
-    
