@@ -28,7 +28,7 @@ EncoderB = Pin(2, Pin.IN)
 #
 # Global state
 #
-Count         = 50
+Count         = 40
 UpdateDisplay = True
 PrevAB        = (EncoderA.value() << 1) | EncoderB.value()
 
