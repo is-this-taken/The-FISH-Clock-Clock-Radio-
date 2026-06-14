@@ -187,7 +187,7 @@ def display_core_thread():
 # ----------------------------------------------------
 
 # 1. Start the Radio instance on I2C
-fm_radio = Radio(98.5, 2, False)
+fm_radio = Radio(101.9, 2, False)
 
 # 2. Attach Pin Interruption Hooks (Soft execution context via hard=False)
 EncoderA.irq(handler=VolumeEncoderInterrupt, trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, hard=False)
