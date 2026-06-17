@@ -3,9 +3,9 @@ import time
 import _thread
 from ssd1309 import Display
 
-# ----------------------------------------------------
+
 # HARDWARE CONFIGURATION & PIN OUTS
-# ----------------------------------------------------
+
 SCREEN_WIDTH = 128
 SCREEN_HEIGHT = 64
 
@@ -27,9 +27,9 @@ spi_dc  = Pin(20)
 spi_cs  = Pin(17)
 SPI_DEVICE = 0
 
-# ----------------------------------------------------
+
 # GLOBAL MULTI-THREAD STATE
-# ----------------------------------------------------
+
 Count = 2
 FrequencyStep = 139
 UpdateDisplay = True
@@ -57,9 +57,9 @@ alarm_flash_state = False
 alarm_flash_last = time.ticks_ms()
 alarm_flash_end = 0
 
-# ----------------------------------------------------
+
 # CORE 0: ENCODER ISR
-# ----------------------------------------------------
+
 def VolumeEncoderInterrupt(pin):
     global Count, PrevAB, UpdateDisplay, last_turn, AdjustMode
     global encoder_pos_vol, encoder_pos_freq, encoder_pos_hr, encoder_pos_min, encoder_pos_ahr, encoder_pos_amin
@@ -133,9 +133,9 @@ def VolumeEncoderInterrupt(pin):
                 UpdateDisplay = True
 
 
-# ----------------------------------------------------
+
 # RADIO CHIP DRIVER CLASS
-# ----------------------------------------------------
+
 class Radio:
     def __init__(self, NewFrequency, NewVolume, NewMute):
         self.Volume = 2
@@ -215,9 +215,9 @@ class Radio:
         self.radio_i2c.writeto(self.i2c_device_address, self.Settings)
 
 
-# ----------------------------------------------------
+
 # CORE 1 DISPLAY THREAD
-# ----------------------------------------------------
+
 def display_core_thread():
     global UpdateDisplay, Count, AdjustMode, LP, seconds, hour, minute, alm_hour, alm_min
     global AlarmFiring, alarm_flash_state
@@ -265,9 +265,9 @@ def display_core_thread():
         time.sleep_ms(15)
 
 
-# ----------------------------------------------------
+
 # STARTUP
-# ----------------------------------------------------
+
 fm_radio = Radio(98.5, 2, False)
 
 EncoderA.irq(handler=VolumeEncoderInterrupt, trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, hard=False)
@@ -275,9 +275,9 @@ EncoderB.irq(handler=VolumeEncoderInterrupt, trigger=Pin.IRQ_FALLING | Pin.IRQ_R
 
 _thread.start_new_thread(display_core_thread, ())
 
-# ----------------------------------------------------
+
 # MAIN LOOP
-# ----------------------------------------------------
+
 last_button_raw = 1
 debounced_button = 1
 last_debounce_time = 0
@@ -288,9 +288,9 @@ LONG_PRESS_MS = 1000
 while True:
     now = time.ticks_ms()
     
-    # ----------------------------------------------------
+    
     # HARDWARE BUTTON DEBOUNCE LOGIC
-    # ----------------------------------------------------
+    
     button_raw = ModeButton.value()
 
     if button_raw != last_button_raw:
@@ -315,9 +315,9 @@ while True:
                         AdjustMode = 0
                     UpdateDisplay = True
 
-    # ----------------------------------------------------
+    
     # LONG PRESS DETECTION
-    # ----------------------------------------------------
+    
     if debounced_button == 0:
         if not long_press_done and time.ticks_diff(now, button_down_time) > LONG_PRESS_MS:
             long_press_done = True
@@ -329,9 +329,9 @@ while True:
             fm_radio.ProgramRadio()
             UpdateDisplay = True
 
-    # ----------------------------------------------------
+    
     # SYSTEM TIMER & EXACT-SECOND ALARM TRIGGER
-    # ----------------------------------------------------
+    
     time_advanced = False
     
     # This loop counts every single literal second
