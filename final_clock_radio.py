@@ -1,76 +1,33 @@
 """
-================================================================================
- ECE 299 - Animal-Themed Clock Radio
- Firmware for Raspberry Pi Pico 2 W (MicroPython)
-================================================================================
+ECE 299 - Gawah Chong-Simard, Javan Hill
 
-HARDWARE / PROTOCOL SUMMARY (see project GPIO & Interface Definitions)
 --------------------------------------------------------------------------------
-Inputs:
-    GPIO 5  - Rotary encoder push-button   (Digital IN, internal pull-up, active-LOW)
-                                            Short press = jump to next preset station.
-    GPIO 4  - Rotary encoder Pin A         (Digital IN; sampled by a 1 ms poll timer,
-                                            not an edge IRQ -- see ROTARY ENCODER below)
-    GPIO 2  - Rotary encoder Pin B         (Digital IN; sampled the same way as Pin A)
-    GPIO 15 - Mode button                  (Digital IN, internal pull-up, active-LOW)
-    GPIO 14 - Alarm button, labeled Snooze/Mute (Digital IN, internal pull-up, active-LOW)
-              Short press = snooze if the alarm is ringing, otherwise mute/
-              unmute the radio. Long press = stop today's alarm entirely.
-              Assumed wired the same way as the other two buttons (switch to
-              GND, using the Pico's internal pull-up). If it's actually wired
-              with an external pull resistor to a different rail, flip
-              Pin.PULL_UP -> Pin.PULL_DOWN below and invert the "pressed"
-              sense in the Button class.
+GPIO 2: Rotary Encoder Pin B (Digital Input, IRQ on Rising/Falling edges)
+GPIO 4: Rotary Encoder Pin A (Digital Input, IRQ on Rising/Falling edges)
 
-Display (SSD1309 OLED, 128x64) - Hardware SPI0 @ 1,000,000 Hz:
-    GPIO 17 - CS   (Chip Select)
-    GPIO 18 - SCK  (Clock)
-    GPIO 19 - MOSI / SDA (Data out)
-    GPIO 20 - DC   (Data/Command)
-    GPIO 21 - RST  (Reset)
+GPIO 5: Rotary Encoder button (Digital Input, Internal Pull-Up, Active-Low)
 
-FM Radio module (RDA5807-type) - Hardware I2C1 @ 200 kHz, device address 0x10:
-    GPIO 26 - SDA
-    GPIO 27 - SCL
+GPIO 14: Mode Button (Digital Input, Internal Pull-Up, Active-Low)
 
-Alarm tone:
-    GPIO 16 - PWM output. Feeds a two-diode summing/isolation network into the
-              same LM386 input line the radio module's audio output drives
-              (through a 10 nF series capacitor). Because this is a passive,
-              AC-coupled mixing node with no signal switch, the RDA5807 MUST be
-              muted in software whenever the buzzer is sounding, or the beep and
-              the station audio will mix together at the amplifier input. This
-              is also a hard project requirement ("during alarm, radio should
-              not play").
 
-Debouncing:
-    - Mode button, encoder push-button, and the alarm button are ordinary
-      mechanical switches -> all three are fully software debounced (50 ms)
-      below.
-    - Rotary encoder A/B quadrature signals are spec'd as hardware debounced,
-      but in practice were still inconsistent (missed/extra steps) under two
-      different edge-IRQ-based software debounce schemes. The encoder is now
-      read by a fixed-rate poll timer instead of pin IRQs, using the same
-      8-state transition table as the widely-used miketeachman/micropython-
-      rotary library -- see ROTARY ENCODER below for why this is more robust.
+GPIO 15: Alarm Button (Digital Input, Internal Pull-Up, Active-Low)
+Display (SSD1309 OLED)
 
-DESIGN NOTES
---------------------------------------------------------------------------------
-- Single core, single main loop. Everything (button polling, timekeeping, alarm
-  logic, radio control, display refresh) runs sequentially from one loop that
-  sleeps ~20 ms per iteration. The rotary encoder is the only thing sampled
-  outside that loop's own pace (via a 1 ms poll timer -- it can change several
-  times between 20 ms main-loop iterations). This avoids the shared-state
-  race conditions that come with running the display on a second core against
-  globals the main loop also writes.
-- All persistent state lives in the ClockRadio class instance below so it is
-  easy to see everything that can be adjusted from the UI in one place.
-- The alarm's loudness is intentionally NOT tied to the radio's volume knob.
-  If it were, turning the radio all the way down would silently also make the
-  alarm inaudible, which would be a safety problem, not just a UX one. The
-  alarm has its own volume field with a floor so it can never be fully
-  silenced, and its own selectable tone pattern.
-================================================================================
+GPIO 16: Pico to Amp Channel
+
+Protocol: Hardware SPI (Bus 0, Baudrate: 1,000,000)
+GPIO 17: SPI CS (Chip Select)
+GPIO 18: SPI SCK (Clock)
+GPIO 19: SPI MOSI / SDA (Data Out)
+GPIO 20: SPI DC (Data/Command)
+GPIO 21: SPI RST (Reset)
+FM Radio Module (e.g., RDA5807 or similar)
+
+Protocol: Hardware I2C (Bus 1, Frequency: 200kHz)
+Device Address: 0x10
+GPIO 26: I2C SDA (Data)
+GPIO 27: I2C SCL (Clock)
+
 """
 
 from machine import Pin, I2C, SPI, PWM, Timer
@@ -108,21 +65,7 @@ oled_spi = SPI(SPI_ID, baudrate=1_000_000, sck=_spi_sck, mosi=_spi_mosi)
 oled = Display(spi=oled_spi, cs=_spi_cs, dc=_spi_dc, rst=_spi_rst,
                 width=SCREEN_WIDTH, height=SCREEN_HEIGHT, flip=False)
 
-# ---- Alarm buzzer (PWM into diode-mixed LM386 input) ----
-# GPIO16 is deliberately NOT held as a live PWM object all the time. Even at
-# duty_u16(0), a PWM slice is still an actively clocked output internally --
-# the counter keeps free-running, it just never asserts high. Because this
-# pin feeds straight into the LM386's input through nothing more than two
-# diodes and a 10 nF cap (no real filtering/isolation), that idle switching
-# activity has a direct path into the audio and shows up as constant static
-# on the radio, even when the alarm has never fired. Fix: _buzzer_on()/
-# _buzzer_off() below create the PWM object only for the moments the buzzer
-# is actually meant to be sounding, and fully deinit() it (releasing GPIO16
-# back to a quiet, non-switching state) the rest of the time -- including
-# during the silent gaps of a beep pattern, not just between alarms. This
-# also happens to line up with the mute-during-alarm behavior: the only
-# time the buzzer is actually driven, the radio is already muted, so there
-# was never anything for it to conflict with by being "on".
+# ---- Alarm buzzer using GPIO16 for PWM
 BUZZER_PIN = 16
 _buzzer_pwm = None
 
@@ -152,27 +95,16 @@ radio_i2c = I2C(RADIO_I2C_BUS, scl=_i2c_scl, sda=_i2c_sda, freq=200_000)
 # ==========================================================================
 # RDA5807-TYPE FM TUNER DRIVER
 # ==========================================================================
-# Register bit layout below matches the RDA5807M datasheet / the widely used
-# mathertel/Radio Arduino library, adapted to MicroPython's sequential-write
-# access mode (single I2C transaction to address 0x10, auto-incrementing
-# from register 0x02):
-#
+# Register bit layout below:
+
 #   Reg 0x02 (CTRL)  hi byte: DHIZ(0x80) DMUTE(0x40) MONO(0x20) BASS(0x10) ..
 #                    lo byte: .. RDS(0x08) NEW_METHOD(0x04) RESET(0x02) ENABLE(0x01)
 #   Reg 0x03 (CHAN)  9-bit channel number <<6 | TUNE(0x10) | BAND | SPACING
 #   Reg 0x04 (R4)    de-emphasis / soft-mute / AFC config bits
 #   Reg 0x05 (VOL)   lo nibble = volume (0-15)
 #
-# Channel number uses 100 kHz spacing referenced from the BAND=00 (US/Europe)
-# lower band edge of 87.0 MHz -- NOT 88.0:
-#   channel = round((freq_MHz - 87.0) * 10)
-# This was the actual cause of the "just static" symptom: with an 88.0 MHz
-# base, every tune request was computing a channel number 10 units (1.0 MHz)
-# below where it needed to be, so the chip was never actually landing on the
-# frequency shown on the display -- confirmed by cross-checking against a
-# known-working driver, whose ComputeChannelSetting() subtracts 870 (87.0 *
-# 10), not 880. FREQ_MIN/FREQ_MAX below are just the UI-facing dial range;
-# they're unrelated to this and unchanged.
+# Channel number uses 100 kHz spacing
+
 class FMRadio:
     FREQ_MIN = 88.0
     FREQ_MAX = 108.0
@@ -292,33 +224,9 @@ alarm_button = Button(ALARM_BTN)
 
 
 # ==========================================================================
-# ROTARY ENCODER (fixed-rate poll timer + 8-state transition table)
+# ROTARY ENCODER (8-state transition table)
 # ==========================================================================
-# Two earlier approaches (raw edge-IRQ counting, then a microsecond-timestamp
-# debounce + "commit only at a rest position" scheme) both still produced
-# inconsistent results on real hardware. The problem with anything built on
-# pin-change IRQs is that contact bounce doesn't reliably cancel itself out
-# -- a bounce burst can revisit a "rest" position an odd number of times, or
-# get partially eaten by a timestamp filter in a way that breaks the
-# assumption that bounce nets out to zero. No amount of clever accounting on
-# top of edge IRQs fixes that, because the ISR is still at the mercy of
-# exactly how the specific switch bounces.
-#
-# This version instead SAMPLES both pins on a fixed 1 ms schedule (a timer,
-# not a pin IRQ) and feeds each sample into the 8-state "full step" rotary
-# decoder used by the widely-deployed miketeachman/micropython-rotary
-# library. Two things make this robust:
-#   1. Polling instead of edge-triggering means any bounce that fully
-#      settles faster than the poll period is simply never seen -- it's
-#      averaged away by the sampling itself, not filtered after the fact.
-#   2. The transition table only ever reports a step on the LAST edge of a
-#      complete, correctly-ordered 00->01->11->10->00 (or reverse) sequence.
-#      Anything out of order resets back to the START state without
-#      reporting anything, so a stray or reordered sample from residual
-#      jitter just gets silently discarded instead of being counted.
-# If it's still not clean on your hardware, ROTARY_POLL_MS is the one knob
-# to try raising (e.g. to 2-5 ms trades a bit of max spin speed for more
-# bounce immunity); lowering it trades the other way.
+
 ROTARY_POLL_MS = 1
 
 _DIR_CW = 0x10
@@ -382,11 +290,7 @@ MODE_NAMES = ("RADIO VOL", "TUNE", "SET HOUR", "SET MIN", "12H/24H",
               "ALARM VOL", "TZ OFFSET")
 
 # Second time-zone offset, in whole hours from the clock's own hour/minute
-# (there's no RTC or network time sync here, so "local" time is just
-# whatever the user set it to -- this offset lets them also track a second
-# time relative to that, e.g. set it to +3 to see what time it is 3 hours
-# ahead). Whole-hour steps only, for simplicity; real half-hour zones like
-# India (+5:30) aren't modeled.
+
 TZ_OFFSET_MIN = -12
 TZ_OFFSET_MAX = 14
 
@@ -403,7 +307,7 @@ RADIO_PRESETS = {
 # User-selectable alarm tone patterns: (short display name, segments).
 # Each segment is (frequency_hz, duration_ms); frequency_hz == 0 means
 # silent for that slice. The pattern loops for as long as the alarm fires.
-# (Satisfies "user customizable alarm sound" - exceeds-expectations item.)
+
 TONE_PATTERNS = (
     ("Beep",  ((1500, 500), (0, 500))),
     ("Siren", ((1200, 300), (2000, 300))),
@@ -607,7 +511,7 @@ class ClockRadio:
         self._apply_chip_mute(forced_mute=False)
         self.dirty = True
         # alarm_on is left untouched -> alarm re-arms automatically for the
-        # same alarm_hour:alarm_min the next day (exceeds-expectations item).
+        # same alarm_hour:alarm_min the next day 
 
     # ---------------------------------------------------------------
     # Called ~50x/sec from the main loop.
@@ -713,8 +617,7 @@ def draw_screen(cr):
     # ---- Row 6 (y=54): live value/detail for fields not shown elsewhere.
     # Default (nothing else claiming this row) is a second time-zone
     # readout -- "Provides additional information such as time zone or
-    # displays another time zone time" (exceeds-expectations item for the
-    # 12h/24h display requirement). It's visible whenever the user isn't
+    # displays another time zone time" It's visible whenever the user isn't
     # actively adjusting one of the fields below that needs this row for
     # its own live value. ----
     mode = cr.adjust_mode
